@@ -10,6 +10,9 @@ from flax import linen
 from flax.linen.initializers import lecun_normal, zeros
 from typing import Any, Callable, Optional
 
+from functools import partial
+from .minimalLRU import LRU, BatchSequenceLayer
+
 
 @dataclasses.dataclass
 class FeedForwardModel:
@@ -284,3 +287,185 @@ def make_policy_networks(state_dim: int,
             apply=policy_module.apply)
         return policy
     return policy_model_fn()
+
+
+class DecisionLRU(linen.Module):
+    state_dim: int
+    act_dim: int
+    n_blocks: int
+    h_dim: int
+    context_len: int
+    n_heads: int
+    drop_p: float
+    training: bool
+    dtype: Any = jnp.float32
+    max_timestep: int = 4096
+    use_action_tanh: bool = True
+    kernel_init: Callable[..., Any] = lecun_normal()
+    bias_init: Callable[..., Any] = zeros
+
+    def setup(self):
+        self.input_seq_len = 3 * self.context_len
+    
+    @linen.compact
+    def __call__(self,
+                 timesteps: jnp.ndarray,
+                 states: jnp.ndarray,
+                 actions: jnp.ndarray,
+                 returns_to_go: jnp.ndarray) -> jnp.ndarray:
+        B, T, _ = states.shape
+
+        time_embeddings = linen.Embed(
+            num_embeddings=self.max_timestep,
+            features=self.h_dim)(timesteps)
+
+        # time embeddings are treated similar to positional embeddings
+        state_embeddings = linen.Dense(
+            self.h_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(states) + time_embeddings
+        action_embeddings = linen.Dense(
+            self.h_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(actions) + time_embeddings
+        returns_embeddings = linen.Dense(
+            self.h_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(returns_to_go) + time_embeddings
+
+        # stack rtg, states and actions and reshape sequence as
+        # (r_0, s_0, a_0, r_1, s_1, a_1, r_2, s_2, a_2 ...)
+        h = jnp.stack(
+            (returns_embeddings, state_embeddings, action_embeddings), axis=1
+        ).transpose(0, 2, 1, 3).reshape(B, 3 * T, self.h_dim)
+        
+        h = linen.LayerNorm(dtype=self.dtype)(h)
+        
+        lru = LRU(
+            d_hidden = self.h_dim,
+            d_model = self.h_dim,
+            r_min = 0.0,
+            r_max = 1.0
+        )
+
+        # transformer and prediction
+        sequence_layer = BatchSequenceLayer(
+            lru = lru,  # lru module
+            d_model = self.h_dim,  # model size
+            dropout = self.drop_p,  # dropout probability
+            norm = "batch",  # which normalization to use
+            training = self.training
+        )
+        for _ in range(self.n_blocks):
+            h = sequence_layer(h)
+        
+        # get h reshaped such that its size = (B x 3 x T x h_dim) and
+        # h[:, 0, t] is conditioned on the input sequence r_0, s_0, a_0 ... r_t
+        # h[:, 1, t] is conditioned on the input sequence r_0, s_0, a_0 ... r_t, s_t
+        # h[:, 2, t] is conditioned on the input sequence r_0, s_0, a_0 ... r_t, s_t, a_t
+        # that is, for each timestep (t) we have 3 output embeddings from the transformer,
+        # each conditioned on all previous timesteps plus 
+        # the 3 input variables at that timestep (r_t, s_t, a_t) in sequence.
+        h = h.reshape(B, T, 3, self.h_dim).transpose(0, 2, 1, 3)
+
+        # get predictions
+        return_preds = linen.Dense(
+            1,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(h[:, 2])     # predict next rtg given r, s, a
+        state_preds = linen.Dense(
+            self.state_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(h[:, 2])      # predict next state given r, s, a
+        action_preds = linen.Dense(
+            self.act_dim,
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init)(h[:, 1])      # predict action given r, s
+        if self.use_action_tanh:
+            action_preds = jnp.tanh(action_preds)
+        print("shapes", state_preds.shape, action_preds.shape, return_preds.shape)
+        print("got three outputs")
+        return state_preds, action_preds, return_preds
+
+    
+def make_lru(state_dim: int,
+             act_dim: int,
+             n_blocks: int,
+             h_dim: int,
+             context_len: int,
+             n_heads: int,
+             drop_p: float,
+             training: bool) -> DecisionLRU:
+    """Creates a DecisionLRU model.
+    Args:
+        state_dim: dimension of state
+        act_dim: dimension of action
+        n_blocks: number of attention blocks in LRU
+        h_dim: size of hidden unit for liner layers
+        context_len: length of context
+        n_heads: number of attention heads in in LRU
+        drop_p: dropout rate
+    Returns:
+        a model
+    """
+    module = DecisionLRU(
+        state_dim=state_dim,
+        act_dim=act_dim,
+        n_blocks=n_blocks,
+        h_dim=h_dim,
+        context_len=context_len,
+        n_heads=n_heads,
+        drop_p=drop_p,
+        training=training)
+
+    return module
+
+
+def make_policy_networks_lru(state_dim: int,
+                         act_dim: int,
+                         n_blocks: int,
+                         h_dim: int,
+                         context_len: int,
+                         n_heads: int,
+                         drop_p: float,
+                         training: bool) -> FeedForwardModel:
+    batch_size = 1
+    dummy_timesteps = jnp.zeros((batch_size, context_len), dtype=jnp.int32)
+    dummy_states = jnp.zeros((batch_size, context_len, state_dim))
+    dummy_actions = jnp.zeros((batch_size, context_len, act_dim))
+    dummy_rtg = jnp.zeros((batch_size, context_len, 1))
+
+    def policy_model_fn():
+        class PolicyModule(linen.Module):
+            @linen.compact
+            def __call__(self,
+                         timesteps: jnp.ndarray,
+                         states: jnp.ndarray,
+                         actions: jnp.ndarray,
+                         returns_to_go: jnp.ndarray):
+                s_ps, a_ps, r_ps = make_lru(
+                    state_dim=state_dim,
+                    act_dim=act_dim,
+                    n_blocks=n_blocks,
+                    h_dim=h_dim,
+                    context_len=context_len,
+                    n_heads=n_heads,
+                    drop_p=drop_p,
+                    training=training)(timesteps, states, actions, returns_to_go)
+                print("s_ps, a_ps, r_ps", s_ps.shape, a_ps.shape, r_ps.shape)
+                return s_ps, a_ps, r_ps
+
+        policy_module = PolicyModule()
+        policy = FeedForwardModel(
+            init=lambda key: policy_module.init(
+                key, dummy_timesteps, dummy_states, dummy_actions, dummy_rtg),
+            apply=policy_module.apply)
+        print("policy", policy)
+        return policy
+    return policy_model_fn()    

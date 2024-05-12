@@ -81,11 +81,14 @@ def evaluate_on_env(policy_model, policy_params, key, context_len, env, rtg_targ
 
             # add state in placeholder and normalize
             running_state = (jnp.array(running_state) - state_mean) / state_std
-            states = jax.ops.index_update(states, jnp.index_exp[0, t], jnp.array(running_state))
+            # states = jax.ops.index_update(states, jnp.index_exp[0, t], jnp.array(running_state))
+            # Instead of ops.index_update(x, idx, vals) you should use x.at[idx].set(vals).
+            states = states.at[jnp.index_exp[0, t]].set(jnp.array(running_state))
 
             # calcualate running rtg and add it in placeholder
             running_rtg = running_rtg - (running_reward / rtg_scale)
-            rewards_to_go = jax.ops.index_update(rewards_to_go, jnp.index_exp[0, t], jnp.array(running_rtg))
+            # rewards_to_go = jax.ops.index_update(rewards_to_go, jnp.index_exp[0, t], jnp.array(running_rtg))
+            rewards_to_go = rewards_to_go.at[jnp.index_exp[0, t]].set(jnp.array(running_rtg))
 
             if t < context_len:
                 _, act_preds, _ = policy_model_apply(policy_params,
@@ -107,7 +110,8 @@ def evaluate_on_env(policy_model, policy_params, key, context_len, env, rtg_targ
             running_state, running_reward, done, _ = env.step(act)
 
             # add action in placeholder
-            actions = jax.ops.index_update(actions, jnp.index_exp[0, t], act)
+            # actions = jax.ops.index_update(actions, jnp.index_exp[0, t], act)
+            actions = actions.at[jnp.index_exp[0, t]].set(act)
 
             total_reward += running_reward
 

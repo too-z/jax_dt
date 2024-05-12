@@ -6,7 +6,7 @@ import random
 
 import numpy as np
 
-from decision_transformer.dt.model import make_policy_networks
+from decision_transformer.dt.model import make_policy_networks, make_policy_networks_lru
 from decision_transformer.dt.utils import evaluate_on_env, get_d4rl_dataset_stats, get_d4rl_normalized_score, load_params
 from decision_transformer.pmap import bcast_local_devices
 
@@ -90,7 +90,16 @@ def test(args):
 
     all_scores = []
 
-    policy_model = make_policy_networks(
+    # policy_model = make_policy_networks(
+    #     state_dim=state_dim,
+    #     act_dim=act_dim,
+    #     n_blocks=n_blocks,
+    #     h_dim=embed_dim,
+    #     context_len=context_len,
+    #     n_heads=n_heads,
+    #     drop_p=dropout_p,
+    # )
+    policy_model = make_policy_networks_lru(
         state_dim=state_dim,
         act_dim=act_dim,
         n_blocks=n_blocks,
@@ -98,6 +107,7 @@ def test(args):
         context_len=context_len,
         n_heads=n_heads,
         drop_p=dropout_p,
+        training=False,
     )
 
     for eval_chk_pt_name, key_i in zip(eval_chk_pt_list, jax.random.split(key, num=len(eval_chk_pt_list))):
@@ -166,7 +176,7 @@ if __name__ == "__main__":
     parser.add_argument('--n_blocks', type=int, default=3)
     parser.add_argument('--embed_dim', type=int, default=128)
     parser.add_argument('--n_heads', type=int, default=1)
-    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--dropout_p', type=float, default=0.) # no drop out in evaluation phase
 
     parser.add_argument('--max_devices_per_host', type=int, default=None)
 
