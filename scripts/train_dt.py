@@ -16,7 +16,7 @@ import numpy as np
 from datetime import datetime
 from typing import Any, Dict, Tuple
 
-from decision_transformer.dt.model import make_policy_networks
+from decision_transformer.dt.model import make_policy_networks, make_policy_networks_lru
 from decision_transformer.dt.utils import ReplayBuffer, TrainingState, Transition
 from decision_transformer.dt.utils import discount_cumsum, evaluate_on_env, get_d4rl_normalized_score, save_params
 from decision_transformer.pmap import bcast_local_devices, synchronize_hosts, is_replicated
@@ -189,7 +189,16 @@ def train(args):
         data=jnp.concatenate(replay_buffer_data, axis=0).reshape(local_devices_to_use, -1, max_epi_len + context_len, trans_dim)
     ) # (local_devices_to_use, num_epi, max_epi_len + context_len, trans_dim)
 
-    policy_model = make_policy_networks(
+    # policy_model = make_policy_networks(
+    #     state_dim=state_dim,
+    #     act_dim=act_dim,
+    #     n_blocks=n_blocks,
+    #     h_dim=embed_dim,
+    #     context_len=context_len,
+    #     n_heads=n_heads,
+    #     drop_p=dropout_p,
+    # )
+    policy_model = make_policy_networks_lru(
         state_dim=state_dim,
         act_dim=act_dim,
         n_blocks=n_blocks,
@@ -197,6 +206,7 @@ def train(args):
         context_len=context_len,
         n_heads=n_heads,
         drop_p=dropout_p,
+        training=True,
     )
 
     schedule_fn = optax.polynomial_schedule(
@@ -228,7 +238,8 @@ def train(args):
         a_t = transitions.a_t  # (batch_size_per_device, context_len, action_dim)
         rtg_t = transitions.rtg_t  # (batch_size_per_device, context_len, 1)
         mask = transitions.mask_t  # (batch_size_per_device, context_len, 1)
-        _, a_p, _ = policy_model.apply(policy_params, ts, s_t, a_t, rtg_t, rngs={'dropout': key})
+        print("apply to the model")
+        _, a_p, _ = policy_model.apply(policy_params, ts, s_t, a_t, rtg_t, rngs={'dropout': key}, mutable=["batch_stats"])
 
         a_t = jnp.where(mask.reshape(-1, 1) > 0, a_t.reshape(-1, act_dim), jnp.zeros(()))
         a_p = jnp.where(mask.reshape(-1, 1) > 0, a_p.reshape(-1, act_dim), jnp.zeros(()))
