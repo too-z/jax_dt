@@ -238,8 +238,8 @@ def train(args):
         a_t = transitions.a_t  # (batch_size_per_device, context_len, action_dim)
         rtg_t = transitions.rtg_t  # (batch_size_per_device, context_len, 1)
         mask = transitions.mask_t  # (batch_size_per_device, context_len, 1)
-        print("apply to the model")
-        _, a_p, _ = policy_model.apply(policy_params, ts, s_t, a_t, rtg_t, rngs={'dropout': key}, mutable=["batch_stats"])
+        _, a_p, _ = policy_model.apply(policy_params, ts, s_t, a_t, rtg_t, rngs={'dropout': key})
+        # _, a_p, _ = policy_model.apply(policy_params, ts, s_t, a_t, rtg_t, rngs={'dropout': key}, mutable=["batch_stats"])
 
         a_t = jnp.where(mask.reshape(-1, 1) > 0, a_t.reshape(-1, act_dim), jnp.zeros(()))
         a_p = jnp.where(mask.reshape(-1, 1) > 0, a_p.reshape(-1, act_dim), jnp.zeros(()))

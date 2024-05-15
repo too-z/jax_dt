@@ -292,7 +292,6 @@ def make_policy_networks(state_dim: int,
 class DecisionLRU(linen.Module):
     state_dim: int
     act_dim: int
-    n_blocks: int
     h_dim: int
     context_len: int
     n_heads: int
@@ -359,8 +358,7 @@ class DecisionLRU(linen.Module):
             norm = "batch",  # which normalization to use
             training = self.training
         )
-        for _ in range(self.n_blocks):
-            h = sequence_layer(h)
+        h = sequence_layer(h)
         
         # get h reshaped such that its size = (B x 3 x T x h_dim) and
         # h[:, 0, t] is conditioned on the input sequence r_0, s_0, a_0 ... r_t
@@ -396,7 +394,6 @@ class DecisionLRU(linen.Module):
     
 def make_lru(state_dim: int,
              act_dim: int,
-             n_blocks: int,
              h_dim: int,
              context_len: int,
              n_heads: int,
@@ -417,7 +414,6 @@ def make_lru(state_dim: int,
     module = DecisionLRU(
         state_dim=state_dim,
         act_dim=act_dim,
-        n_blocks=n_blocks,
         h_dim=h_dim,
         context_len=context_len,
         n_heads=n_heads,
@@ -429,7 +425,6 @@ def make_lru(state_dim: int,
 
 def make_policy_networks_lru(state_dim: int,
                          act_dim: int,
-                         n_blocks: int,
                          h_dim: int,
                          context_len: int,
                          n_heads: int,
@@ -452,7 +447,6 @@ def make_policy_networks_lru(state_dim: int,
                 s_ps, a_ps, r_ps = make_lru(
                     state_dim=state_dim,
                     act_dim=act_dim,
-                    n_blocks=n_blocks,
                     h_dim=h_dim,
                     context_len=context_len,
                     n_heads=n_heads,
